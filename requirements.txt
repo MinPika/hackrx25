@@ -1,0 +1,41 @@
+# FastAPI and Web Components
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Document Processing - Core
+doclayout-yolo
+opencv-python==4.8.1.78
+pytesseract==0.3.10
+pdf2image==1.16.3
+Pillow==10.0.1
+python-docx==0.8.11
+
+# Document Processing - System Dependencies
+# Note: You'll need to install system packages:
+# sudo apt-get install tesseract-ocr poppler-utils
+
+# LangChain and Vector Database (Compatible Versions)
+langchain==0.1.20
+langchain-community==0.0.38  
+langchain-core==0.1.52
+chromadb==0.4.24
+
+# FREE Embeddings (No API key required)
+sentence-transformers==2.2.2
+
+# LLM Provider
+groq==0.4.1
+
+# Hugging Face
+huggingface-hub==0.19.4
+transformers==4.36.0
+
+# Core Python Libraries
+requests==2.31.0
+numpy==1.24.3
+Pydantic==2.5.0
+
+# Utility Libraries
+python-dotenv==1.0.0
+typing-extensions==4.8.0
