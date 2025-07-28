@@ -3,38 +3,38 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 
-# Document Processing - Core (Exact working versions)
+# Document Processing - Core
 doclayout-yolo
-opencv-python==4.8.1.78
+opencv-python==4.9.0.80
 pytesseract==0.3.10
-pdf2image==1.16.3
-Pillow==10.0.1
-python-docx==0.8.11
+pdf2image==1.17.0
+Pillow==10.2.0
+python-docx==1.1.0
 
-# LangChain - Pinned to avoid conflicts
-langchain==0.1.0
-langchain-community==0.0.13
-langchain-core==0.1.7
-chromadb==0.4.15
+# LangChain and Vector Database (Updated Compatible Versions)
+langchain==0.1.20
+langchain-community==0.0.38  
+langchain-core==0.1.52
+chromadb==0.4.24
 
-# FREE Embeddings - Stable version
-sentence-transformers==2.2.2
+# FREE Embeddings (Updated)
+sentence-transformers==2.3.1
 
-# LLM Provider - Keep your Groq
+# LLM Provider
 groq==0.4.1
 
-# Hugging Face - Stable versions
-huggingface-hub==0.17.3
-transformers==4.35.2
+# Hugging Face (Updated)
+huggingface-hub==0.20.3
+transformers==4.37.2
 
-# Core Libraries - Pinned
+# Core Python Libraries (Updated)
 requests==2.31.0
-numpy==1.24.3
-pydantic==2.5.0
+numpy==1.26.3
+pydantic==2.5.3
 
-# Utilities
+# Utility Libraries
 python-dotenv==1.0.0
-typing-extensions==4.8.0
+typing-extensions==4.9.0
 
-# Ensure compatibility
-urllib3==1.26.18
+# System compatibility
+setuptools>=65.0.0
