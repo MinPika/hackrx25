@@ -1,10 +1,9 @@
 services:
   - type: web
     name: hackrx-6-qa-system
-    env: python
-    plan: free  # This enables free tier
-    buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    env: docker  # Use Docker instead of python
+    plan: free
+    dockerfilePath: ./Dockerfile  # Use your Dockerfile
     healthCheckPath: /health
     envVars:
       - key: GROQ_API_KEY
