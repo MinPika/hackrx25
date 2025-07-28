@@ -5,37 +5,36 @@ python-multipart==0.0.6
 
 # Document Processing - Core
 doclayout-yolo
-opencv-python==4.8.1.78
+opencv-python==4.9.0.80
 pytesseract==0.3.10
-pdf2image==1.16.3
-Pillow==10.0.1
-python-docx==0.8.11
+pdf2image==1.17.0
+Pillow==10.2.0
+python-docx==1.1.0
 
-# Document Processing - System Dependencies
-# Note: You'll need to install system packages:
-# sudo apt-get install tesseract-ocr poppler-utils
-
-# LangChain and Vector Database (Compatible Versions)
+# LangChain and Vector Database (Updated Compatible Versions)
 langchain==0.1.20
 langchain-community==0.0.38  
 langchain-core==0.1.52
 chromadb==0.4.24
 
-# FREE Embeddings (No API key required)
-sentence-transformers==2.2.2
+# FREE Embeddings (Updated)
+sentence-transformers==2.3.1
 
 # LLM Provider
 groq==0.4.1
 
-# Hugging Face
-huggingface-hub==0.19.4
-transformers==4.36.0
+# Hugging Face (Updated)
+huggingface-hub==0.20.3
+transformers==4.37.2
 
-# Core Python Libraries
+# Core Python Libraries (Updated)
 requests==2.31.0
-numpy==1.24.3
-Pydantic==2.5.0
+numpy==1.26.3
+pydantic==2.5.3
 
 # Utility Libraries
 python-dotenv==1.0.0
-typing-extensions==4.8.0
+typing-extensions==4.9.0
+
+# System compatibility
+setuptools>=65.0.0
