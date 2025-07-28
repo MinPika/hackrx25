@@ -1,0 +1,13 @@
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+startCommand = "python main.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+
+[environment]
+PYTHONUNBUFFERED = "1"
+PIP_TIMEOUT = "1000"
+PIP_RETRIES = "3"
