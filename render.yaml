@@ -1,0 +1,22 @@
+{
+  "services": [
+    {
+      "type": "web",
+      "name": "hackrx-6-qa-system",
+      "env": "python",
+      "buildCommand": "pip install -r requirements.txt",
+      "startCommand": "python main.py",
+      "healthCheckPath": "/health",
+      "envVars": [
+        {
+          "key": "GROQ_API_KEY",
+          "value": "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"
+        },
+        {
+          "key": "HACKRX_AUTH_TOKEN",
+          "value": "95f763f2e367cc7e5f72304cb9e9b84229f97f2a5b2b08f14b5034e8328596ec"
+        }
+      ]
+    }
+  ]
+}
