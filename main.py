@@ -4,561 +4,564 @@ import json
 import re
 import time
 import tempfile
-import shutil
-from typing import List, Dict, Optional
-import requests
+import hashlib
 import asyncio
-from pathlib import Path
+from typing import List, Dict, Optional, Tuple, Any
+from concurrent.futures import ThreadPoolExecutor
+import logging
 
 # FastAPI and web components
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-# Document processing
-from doclayout_yolo import YOLOv10
-import cv2
-import pytesseract
-from pdf2image import convert_from_path
-import numpy as np
-from huggingface_hub import hf_hub_download
-from PIL import Image
+# High-performance document processing
+import fitz  # PyMuPDF for ultra-fast PDF processing
+import httpx  # Async HTTP client
 import docx
 import email
-from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-# LangChain and Vector Database
-from langchain_core.documents import Document
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+# Fast embeddings and vector search
+import numpy as np
+import faiss
+from sentence_transformers import SentenceTransformer
+from rank_bm25 import BM25Okapi
 
+# LLM
 from groq import Groq
-import os
-import pytesseract
 
-# Configure system paths
-def configure_system_paths():
-    """Configure Tesseract and Poppler paths"""
-    
-    # Tesseract configuration
-    tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    if os.path.exists(tesseract_cmd):
-        pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-        print(f"✅ Tesseract configured at: {tesseract_cmd}")
-    
-    # Poppler configuration
-    poppler_path = r"C:\Program Files\Poppler\poppler-24.08.0\Library\bin"
-    if os.path.exists(poppler_path):
-        current_path = os.environ.get('PATH', '')
-        if poppler_path not in current_path:
-            os.environ['PATH'] = current_path + os.pathsep + poppler_path
-        print(f"✅ Poppler configured at: {poppler_path}")
-    
-    return True
+# Optimized configuration
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Configure paths at startup
-configure_system_paths()
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+# Constants
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
 HACKRX_AUTH_TOKEN = "95f763f2e367cc7e5f72304cb9e9b84229f97f2a5b2b08f14b5034e8328596ec"
 
-# Paths
-TEMP_DIR = "./temp_docs"
-CHROMA_DB_PATH = "./chroma_db"
-
-CLASS_NAMES = [
-    'caption', 'footnote', 'formula', 'list_item', 'page_footer', 'page_header',
-    'picture', 'section_header', 'table', 'text', 'title'
-]
-TEXT_CLASSES = ['text', 'title', 'section_header', 'list_item', 'caption', 'footnote']
+# Global models - loaded once at startup
+embedding_model = None
+groq_client = None
 
 class QueryRequest(BaseModel):
-    documents: str  # Blob URL
+    documents: str
     questions: List[str]
 
 class QueryResponse(BaseModel):
     answers: List[str]
-#authenticator
+
+# Security
 security = HTTPBearer()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    """Verify the Bearer token"""
     if credentials.credentials != HACKRX_AUTH_TOKEN:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers={"WWW-Authenticate": "Bearer"},
+            detail="Invalid authentication credentials"
         )
     return credentials.credentials
 
-#Document Processor
-class DocumentProcessor:
-    """Handle multiple document formats with AI-powered layout detection"""
+class OptimizedDocumentProcessor:
+    """Ultra-fast document processor optimized for speed"""
     
     def __init__(self):
-        self.model = None
-        self.embeddings = None
-        self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            length_function=len,
-        )
-        
-    def initialize_models(self):
-        """Initialize AI models"""
-        try:
-            print("🤖 Loading DocLayout-YOLO model...")
-            try:
-                self.model = YOLOv10.from_pretrained("juliozhao/DocLayout-YOLO-DocStructBench")
-            except Exception as e:
-                print(f"Fallback loading: {e}")
-                filepath = hf_hub_download(
-                    repo_id="juliozhao/DocLayout-YOLO-DocStructBench",
-                    filename="doclayout_yolo_docstructbench_imgsz1024.pt"
-                )
-                self.model = YOLOv10(filepath)
-            
-            print("🔤 Loading FREE embeddings...")
-            self.embeddings = HuggingFaceEmbeddings(
-                model_name="all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'}
-            )
-            
-            print("✅ All models loaded successfully!")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Model loading failed: {e}")
-            return False
+        self.http_client = httpx.AsyncClient(timeout=30.0)
+        self.executor = ThreadPoolExecutor(max_workers=4)
     
-    def download_document(self, url: str) -> bytes:
-        """Download document from blob URL"""
+    async def download_document(self, url: str) -> bytes:
+        """Download document with async HTTP"""
         try:
-            print(f"📥 Downloading document from: {url[:100]}...")
-            response = requests.get(url, timeout=60)
+            logger.info(f"Downloading document from URL...")
+            response = await self.http_client.get(url)
             response.raise_for_status()
-            print(f"✅ Downloaded {len(response.content)} bytes")
+            logger.info(f"Downloaded {len(response.content)} bytes")
             return response.content
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to download document: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Download failed: {str(e)}")
     
     def detect_file_type(self, content: bytes) -> str:
-        """Detect file type from content"""
+        """Fast file type detection"""
         if content.startswith(b'%PDF'):
             return 'pdf'
         elif content.startswith(b'PK'):
-            # Check if it's a DOCX (ZIP-based format)
-            try:
-                with tempfile.NamedTemporaryFile() as tmp:
-                    tmp.write(content)
-                    tmp.flush()
-                    doc = docx.Document(tmp.name)
-                    return 'docx'
-            except:
-                pass
-        
-        # Try to parse as email
-        try:
-            content_str = content.decode('utf-8', errors='ignore')
-            if 'From:' in content_str and 'Subject:' in content_str:
-                return 'email'
-        except:
-            pass
-        
+            return 'docx'
+        elif b'From:' in content[:1000] and b'Subject:' in content[:1000]:
+            return 'email'
         return 'unknown'
     
-    def process_pdf_with_yolo(self, content: bytes) -> str:
-        """Process PDF using DocLayout-YOLO + OCR"""
-        import tempfile
-        import time
-        
-        # Create temporary file
-        tmp_file = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
-        tmp_path = tmp_file.name
-        
+    def process_pdf_fast(self, content: bytes) -> str:
+        """Ultra-fast PDF processing using PyMuPDF"""
         try:
-            # Write and close file properly
-            tmp_file.write(content)
-            tmp_file.close()  # Explicitly close before processing
+            # Open PDF from memory buffer - no disk I/O
+            doc = fitz.open(stream=content, filetype="pdf")
             
-            # Small delay to ensure file is released
-            time.sleep(0.1)
+            text_blocks = []
+            total_pages = len(doc)
+            logger.info(f"Processing {total_pages} pages")
             
-            # Convert PDF to images
-            images = convert_from_path(tmp_path)
-            full_text = ""
-            
-            for page_num, image in enumerate(images, 1):
-                print(f"   📖 Processing page {page_num}/{len(images)}")
-                
-                # Convert to OpenCV format
-                img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-                
-                # AI Layout Detection
-                results = self.model(img_cv)[0]
-                
-                # Extract text blocks
-                text_blocks = []
-                for box in results.boxes:
-                    class_idx = int(box.cls[0])
-                    class_name = CLASS_NAMES[class_idx] if class_idx < len(CLASS_NAMES) else 'unknown'
-                    confidence = float(box.conf[0])
+            # Process pages in parallel batches
+            def process_page_batch(start_page: int, end_page: int) -> List[str]:
+                batch_text = []
+                for page_num in range(start_page, min(end_page, total_pages)):
+                    page = doc[page_num]
                     
-                    if class_name in TEXT_CLASSES and confidence > 0.5:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        
-                        # Add padding and crop
-                        padding = 5
-                        x1 = max(0, x1 - padding)
-                        y1 = max(0, y1 - padding)
-                        x2 = min(img_cv.shape[1], x2 + padding)
-                        y2 = min(img_cv.shape[0], y2 + padding)
-                        
-                        cropped_img = img_cv[y1:y2, x1:x2]
-                        
-                        if cropped_img.size > 0:
-                            text = pytesseract.image_to_string(cropped_img, lang='eng').strip()
-                            if text:
-                                text_blocks.append({
-                                    'text': text,
-                                    'class': class_name,
-                                    'y_position': y1,
-                                    'confidence': confidence
-                                })
+                    # Fast text extraction - no OCR, pure text
+                    text = page.get_text()
+                    
+                    if text.strip():
+                        # Clean and structure text
+                        cleaned_text = self.clean_text(text)
+                        if cleaned_text:
+                            batch_text.append(f"=== PAGE {page_num + 1} ===\n{cleaned_text}")
                 
-                # Sort by position and combine
-                text_blocks.sort(key=lambda x: x['y_position'])
-                page_text = ""
-                
-                for block in text_blocks:
-                    if block['class'] in ['title', 'section_header']:
-                        page_text += f"\n=== {block['text'].upper()} ===\n"
-                    elif block['class'] == 'list_item':
-                        page_text += f"• {block['text']}\n"
-                    else:
-                        page_text += f"{block['text']}\n"
-                
-                full_text += page_text + f"\n{'-'*50} Page {page_num} End {'-'*50}\n\n"
+                return batch_text
             
-            return full_text.strip()
+            # Process in batches of 5 pages
+            batch_size = 5
+            futures = []
             
-        finally:
-            # Always try to clean up
-            try:
-                os.unlink(tmp_path)
-            except:
-                pass  # Ignore cleanup errors
+            for i in range(0, total_pages, batch_size):
+                future = self.executor.submit(process_page_batch, i, i + batch_size)
+                futures.append(future)
+            
+            # Collect results
+            for future in futures:
+                text_blocks.extend(future.result())
+            
+            doc.close()
+            
+            full_text = "\n\n".join(text_blocks)
+            logger.info(f"Extracted {len(full_text)} characters from {total_pages} pages")
+            return full_text
+            
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"PDF processing failed: {str(e)}")
     
-    def process_docx(self, content: bytes) -> str:
-        """Process DOCX files"""
+    def process_docx_fast(self, content: bytes) -> str:
+        """Fast DOCX processing"""
         try:
             with tempfile.NamedTemporaryFile() as tmp_file:
                 tmp_file.write(content)
                 tmp_file.flush()
                 
                 doc = docx.Document(tmp_file.name)
-                full_text = ""
+                text_blocks = []
                 
                 for paragraph in doc.paragraphs:
                     text = paragraph.text.strip()
                     if text:
-                        # Detect if it's a heading
-                        if paragraph.style.name.startswith('Heading'):
-                            full_text += f"\n=== {text.upper()} ===\n"
-                        else:
-                            full_text += f"{text}\n"
+                        text_blocks.append(text)
                 
                 # Process tables
                 for table in doc.tables:
-                    full_text += "\n=== TABLE DATA ===\n"
                     for row in table.rows:
                         row_text = " | ".join([cell.text.strip() for cell in row.cells])
                         if row_text.strip():
-                            full_text += f"{row_text}\n"
-                    full_text += "=== END TABLE ===\n\n"
+                            text_blocks.append(row_text)
                 
-                return full_text.strip()
+                return "\n\n".join(text_blocks)
                 
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to process DOCX: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"DOCX processing failed: {str(e)}")
     
-    def process_email(self, content: bytes) -> str:
-        """Process email files"""
+    def process_email_fast(self, content: bytes) -> str:
+        """Fast email processing"""
         try:
             content_str = content.decode('utf-8', errors='ignore')
             msg = email.message_from_string(content_str)
             
-            full_text = ""
+            text_parts = []
             
-            # Extract headers
-            full_text += f"=== EMAIL METADATA ===\n"
-            full_text += f"From: {msg.get('From', 'Unknown')}\n"
-            full_text += f"To: {msg.get('To', 'Unknown')}\n"
-            full_text += f"Subject: {msg.get('Subject', 'No Subject')}\n"
-            full_text += f"Date: {msg.get('Date', 'Unknown')}\n"
-            full_text += f"=== EMAIL CONTENT ===\n\n"
+            # Headers
+            text_parts.append(f"From: {msg.get('From', 'Unknown')}")
+            text_parts.append(f"To: {msg.get('To', 'Unknown')}")
+            text_parts.append(f"Subject: {msg.get('Subject', 'No Subject')}")
+            text_parts.append(f"Date: {msg.get('Date', 'Unknown')}")
+            text_parts.append("="*50)
             
-            # Extract body
+            # Body
             if msg.is_multipart():
                 for part in msg.walk():
                     if part.get_content_type() == "text/plain":
                         body = part.get_payload(decode=True)
                         if body:
-                            full_text += body.decode('utf-8', errors='ignore')
+                            text_parts.append(body.decode('utf-8', errors='ignore'))
             else:
                 body = msg.get_payload(decode=True)
                 if body:
-                    full_text += body.decode('utf-8', errors='ignore')
+                    text_parts.append(body.decode('utf-8', errors='ignore'))
             
-            return full_text.strip()
+            return "\n\n".join(text_parts)
             
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Failed to process email: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Email processing failed: {str(e)}")
     
-    def process_document(self, url: str) -> List[Document]:
-        """Main document processing pipeline"""
-        print(f"🔄 Processing document from URL...")
+    def clean_text(self, text: str) -> str:
+        """Fast text cleaning"""
+        # Remove excessive whitespace
+        text = re.sub(r'\n\s*\n', '\n\n', text)
+        text = re.sub(r' +', ' ', text)
         
-        # Download document
-        content = self.download_document(url)
+        # Remove page headers/footers patterns
+        lines = text.split('\n')
+        cleaned_lines = []
         
-        # Detect file type
+        for line in lines:
+            line = line.strip()
+            # Skip common headers/footers
+            if (len(line) < 3 or 
+                line.isdigit() or 
+                re.match(r'^Page \d+', line) or
+                len(line) > 500):  # Skip very long lines (likely formatting issues)
+                continue
+            cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines)
+    
+    async def process_document(self, url: str) -> str:
+        """Main processing pipeline"""
+        # Download
+        content = await self.download_document(url)
+        
+        # Detect type
         file_type = self.detect_file_type(content)
-        print(f"📄 Detected file type: {file_type}")
+        logger.info(f"Detected file type: {file_type}")
         
         # Process based on type
         if file_type == 'pdf':
-            if self.model is None:
-                raise HTTPException(status_code=500, detail="DocLayout-YOLO model not loaded")
-            text = self.process_pdf_with_yolo(content)
+            text = self.process_pdf_fast(content)
         elif file_type == 'docx':
-            text = self.process_docx(content)
+            text = self.process_docx_fast(content)
         elif file_type == 'email':
-            text = self.process_email(content)
+            text = self.process_email_fast(content)
         else:
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {file_type}")
         
         if not text.strip():
-            raise HTTPException(status_code=400, detail="No text could be extracted from document")
+            raise HTTPException(status_code=400, detail="No text extracted from document")
         
-        print(f"✅ Extracted {len(text)} characters")
-        
-        # Split into chunks
-        chunks = self.text_splitter.split_text(text)
-        print(f"📊 Created {len(chunks)} text chunks")
-        
-        # Create documents
-        documents = []
-        for i, chunk in enumerate(chunks):
-            doc = Document(
-                page_content=chunk,
-                metadata={
-                    "source": url,
-                    "chunk_id": i,
-                    "file_type": file_type,
-                    "total_chunks": len(chunks)
-                }
-            )
-            documents.append(doc)
-        
-        return documents
+        return text
 
-#QA system
-
-class HackRxIntelligentQA:
-    """Complete intelligent QA system for insurance documents"""
+class UltraFastRetriever:
+    """High-speed retrieval system using FAISS + BM25"""
     
-    def __init__(self):
-        self.groq_client = None
-        self.doc_processor = DocumentProcessor()
-        
-    def initialize(self):
-        """Initialize all components"""
-        print("🚀 Initializing HackRx 6.0 Intelligent QA System...")
-        
-        # Initialize Groq
-        try:
-            self.groq_client = Groq(api_key=GROQ_API_KEY)
-            print("⚡ Groq client initialized")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to initialize Groq: {str(e)}")
-        
-        # Initialize document processor
-        if not self.doc_processor.initialize_models():
-            raise HTTPException(status_code=500, detail="Failed to initialize AI models")
-        
-        print("✅ HackRx system ready!")
+    def __init__(self, embedding_model: SentenceTransformer):
+        self.embedding_model = embedding_model
+        self.chunks = []
+        self.embeddings = None
+        self.bm25 = None
+        self.faiss_index = None
     
-    def create_vectorstore(self, documents: List[Document]) -> Chroma:
-        """Create vector database from documents"""
-        print("🔄 Creating vector database...")
+    def create_chunks(self, text: str) -> List[str]:
+        """Smart chunking optimized for speed and accuracy"""
+        # Split by double newlines first (paragraphs)
+        paragraphs = text.split('\n\n')
         
-        try:
-            vectorstore = Chroma.from_documents(
-                documents=documents,
-                embedding=self.doc_processor.embeddings,
-                persist_directory=None  # In-memory for faster processing
-            )
-            print("✅ Vector database created")
-            return vectorstore
+        chunks = []
+        current_chunk = ""
+        target_size = 400  # tokens ≈ 300 words
+        overlap_size = 50
+        
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
             
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create vector database: {str(e)}")
+            # If paragraph is small, accumulate
+            if len(current_chunk) + len(para) < target_size:
+                current_chunk += ("\n\n" if current_chunk else "") + para
+            else:
+                # Save current chunk if not empty
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    
+                    # Start new chunk with overlap
+                    overlap_text = current_chunk[-overlap_size:] if len(current_chunk) > overlap_size else ""
+                    current_chunk = overlap_text + ("\n\n" if overlap_text else "") + para
+                else:
+                    current_chunk = para
+        
+        # Add final chunk
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        # Filter out very short chunks
+        chunks = [chunk for chunk in chunks if len(chunk.strip()) > 50]
+        
+        logger.info(f"Created {len(chunks)} chunks")
+        return chunks
     
-    def extract_query_intent(self, question: str) -> Dict[str, str]:
-        """Extract intent and entities from question using Groq"""
+    # def build_index(self, text: str):
+    #     """Build retrieval index from text"""
+    #     start_time = time.time()
         
-        extraction_prompt = f"""
-        You are an expert insurance query analyzer. Extract key information from this question and return ONLY a JSON object.
-
-        Question: "{question}"
-
-        Extract these fields (use "not specified" if not found):
-        {{
-            "query_type": "coverage/waiting_period/limits/benefits/definition/procedure",
-            "medical_procedure": "specific medical procedure or condition mentioned",
-            "policy_aspect": "what aspect of policy they're asking about",
-            "time_related": "any time periods, waiting periods, or durations mentioned",
-            "amount_related": "any amounts, limits, percentages, or financial aspects",
-            "urgency": "emergency/routine/general"
-        }}
-
-        Return only the JSON object, no other text.
-        """
+    #     # Create chunks
+    #     self.chunks = self.create_chunks(text)
         
+    #     if not self.chunks:
+    #         raise HTTPException(status_code=400, detail="No valid chunks created")
+        
+    #     # Create embeddings in batch
+    #     logger.info("Creating embeddings...")
+    #     self.embeddings = self.embedding_model.encode(
+    #         self.chunks, 
+    #         batch_size=32,
+    #         show_progress_bar=False,
+    #         convert_to_numpy=True
+    #     )
+        
+    #     # Build FAISS index
+    #     dimension = self.embeddings.shape[1]
+    #     self.faiss_index = faiss.IndexFlatL2(dimension)
+    #     self.faiss_index.add(self.embeddings.astype('float32'))
+        
+    #     # Build BM25 index
+    #     tokenized_chunks = [chunk.lower().split() for chunk in self.chunks]
+    #     self.bm25 = BM25Okapi(tokenized_chunks)
+        
+    #     build_time = time.time() - start_time
+    #     logger.info(f"Built retrieval index in {build_time:.2f}s")
+    def build_index(self, text: str):
+        """Build retrieval index from text - optimized"""
+        start_time = time.time()
+        
+        # Create chunks
+        self.chunks = self.create_chunks(text)
+        
+        if not self.chunks:
+            raise HTTPException(status_code=400, detail="No valid chunks created")
+        
+        # Create embeddings with optimizations
+        logger.info("Creating embeddings...")
+        
+        # OPTIMIZATION 1: Larger batch size for faster processing
+        # OPTIMIZATION 2: Normalize embeddings for faster similarity search
+        # OPTIMIZATION 3: Use float32 to reduce memory and increase speed
+        self.embeddings = self.embedding_model.encode(
+            self.chunks, 
+            batch_size=64,  # Increased from 32
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=True,  # Faster cosine similarity
+            device='cpu'
+        ).astype(np.float32)  # Reduce memory usage
+        
+        # Build FAISS index with optimizations
+        dimension = self.embeddings.shape[1]
+        
+        # Use IP (Inner Product) index since embeddings are normalized
+        # This is faster than L2 distance for normalized vectors
+        self.faiss_index = faiss.IndexFlatIP(dimension)
+        self.faiss_index.add(self.embeddings)
+        
+        # Build BM25 index with optimizations
+        # Pre-tokenize chunks for faster BM25 search
+        tokenized_chunks = [chunk.lower().split() for chunk in self.chunks]
+        self.bm25 = BM25Okapi(tokenized_chunks)
+        
+        build_time = time.time() - start_time
+        logger.info(f"Built retrieval index in {build_time:.2f}s")
+    
+    # def hybrid_search(self, query: str, top_k: int = 5) -> List[Tuple[str, float]]:
+    #     """Hybrid search using FAISS + BM25"""
+    #     query_embedding = self.embedding_model.encode([query], convert_to_numpy=True)
+        
+    #     # FAISS semantic search
+    #     distances, indices = self.faiss_index.search(query_embedding.astype('float32'), top_k * 2)
+    #     semantic_results = [(self.chunks[idx], 1.0 / (1.0 + dist)) for idx, dist in zip(indices[0], distances[0])]
+        
+    #     # BM25 keyword search
+    #     tokenized_query = query.lower().split()
+    #     bm25_scores = self.bm25.get_scores(tokenized_query)
+    #     bm25_results = [(self.chunks[i], score) for i, score in enumerate(bm25_scores)]
+    #     bm25_results.sort(key=lambda x: x[1], reverse=True)
+    #     bm25_results = bm25_results[:top_k * 2]
+        
+    #     # Combine using reciprocal rank fusion
+    #     chunk_scores = {}
+        
+    #     # Add semantic scores
+    #     for rank, (chunk, score) in enumerate(semantic_results):
+    #         chunk_scores[chunk] = chunk_scores.get(chunk, 0) + 1.0 / (rank + 1)
+        
+    #     # Add BM25 scores
+    #     for rank, (chunk, score) in enumerate(bm25_results):
+    #         chunk_scores[chunk] = chunk_scores.get(chunk, 0) + 1.0 / (rank + 1)
+        
+    #     # Sort by combined score
+    #     final_results = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
+        
+    #     return final_results[:top_k]
+    def hybrid_search(self, query: str, top_k: int = 5) -> List[Tuple[str, float]]:
+        """Hybrid search using FAISS + BM25 - optimized"""
+        # Normalize query embedding for IP search
+        query_embedding = self.embedding_model.encode(
+            [query], 
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            device='cpu'
+        ).astype(np.float32)
+        
+        # FAISS semantic search (using Inner Product for normalized vectors)
+        scores, indices = self.faiss_index.search(query_embedding, top_k * 2)
+        semantic_results = [(self.chunks[idx], score) for idx, score in zip(indices[0], scores[0])]
+        
+        # BM25 keyword search
+        tokenized_query = query.lower().split()
+        bm25_scores = self.bm25.get_scores(tokenized_query)
+        bm25_results = [(self.chunks[i], score) for i, score in enumerate(bm25_scores)]
+        bm25_results.sort(key=lambda x: x[1], reverse=True)
+        bm25_results = bm25_results[:top_k * 2]
+        
+        # Combine using reciprocal rank fusion
+        chunk_scores = {}
+        
+        # Add semantic scores
+        for rank, (chunk, score) in enumerate(semantic_results):
+            chunk_scores[chunk] = chunk_scores.get(chunk, 0) + 1.0 / (rank + 1)
+        
+        # Add BM25 scores
+        for rank, (chunk, score) in enumerate(bm25_results):
+            chunk_scores[chunk] = chunk_scores.get(chunk, 0) + 1.0 / (rank + 1)
+        
+        # Sort by combined score
+        final_results = sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)
+        
+        return final_results[:top_k]
+class SmartQAGenerator:
+    """Intelligent QA generation with domain-adaptive prompts"""
+    
+    def __init__(self, groq_client: Groq):
+        self.groq_client = groq_client
+    
+    def classify_question_type(self, question: str) -> str:
+        """Classify question to adapt prompt"""
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ['cover', 'coverage', 'covered', 'eligible', 'benefit']):
+            return 'coverage'
+        elif any(word in question_lower for word in ['period', 'waiting', 'grace', 'time', 'duration']):
+            return 'time_period'
+        elif any(word in question_lower for word in ['limit', 'amount', 'percentage', '%', 'discount', 'premium']):
+            return 'financial'
+        elif any(word in question_lower for word in ['define', 'definition', 'meaning', 'what is']):
+            return 'definition'
+        elif any(word in question_lower for word in ['condition', 'requirement', 'criteria', 'eligibility']):
+            return 'conditions'
+        else:
+            return 'general'
+    
+    def create_adaptive_prompt(self, question: str, context: str, question_type: str) -> str:
+        """Create prompts adapted to question type"""
+        
+        base_instructions = """You are an expert document analyst. Answer questions based STRICTLY on the provided context.
+
+CRITICAL RULES:
+1. Base your answer ONLY on the provided context
+2. If information is not in the context, state "not specified in the document"
+3. Be precise and cite specific policy terms when available
+4. Keep answers concise but comprehensive"""
+        
+        type_specific_instructions = {
+            'coverage': "Focus on what is/isn't covered, any exclusions, and specific conditions for coverage.",
+            'time_period': "Identify specific time periods, waiting periods, grace periods, and any related conditions.",
+            'financial': "Extract exact amounts, percentages, limits, and financial terms. Include any calculation methods.",
+            'definition': "Provide the exact definition as stated in the document. Include any specific criteria or characteristics.",
+            'conditions': "List all conditions, requirements, or criteria that must be met.",
+            'general': "Provide a comprehensive answer addressing all aspects of the question."
+        }
+        
+        prompt = f"""{base_instructions}
+
+QUESTION TYPE: {question_type}
+FOCUS: {type_specific_instructions.get(question_type, type_specific_instructions['general'])}
+
+CONTEXT:
+{context}
+
+QUESTION: {question}
+
+Provide a clear, accurate answer based on the context above:"""
+        
+        return prompt
+    
+    def generate_answer(self, question: str, context_chunks: List[Tuple[str, float]]) -> str:
+        """Generate answer using Groq"""
         try:
+            # Combine top chunks
+            context = "\n\n---\n\n".join([chunk for chunk, score in context_chunks])
+            
+            # Classify question
+            question_type = self.classify_question_type(question)
+            
+            # Create adaptive prompt
+            prompt = self.create_adaptive_prompt(question, context, question_type)
+            
+            # Generate answer
             response = self.groq_client.chat.completions.create(
-                model="llama3-8b-8192",
-                messages=[{"role": "user", "content": extraction_prompt}],
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=200
-            )
-            
-            content = response.choices[0].message.content.strip()
-            
-            # Clean JSON
-            if content.startswith('```json'):
-                content = content[7:-3]
-            elif content.startswith('```'):
-                content = content[3:-3]
-            
-            return json.loads(content)
-            
-        except Exception as e:
-            print(f"⚠️ Intent extraction failed: {e}")
-            return {
-                "query_type": "general",
-                "medical_procedure": "not specified",
-                "policy_aspect": "coverage",
-                "time_related": "not specified",
-                "amount_related": "not specified",
-                "urgency": "general"
-            }
-    
-    def generate_answer(self, question: str, context: str, intent: Dict) -> str:
-        """Generate comprehensive answer using Groq"""
-        
-        insurance_prompt = f"""
-        You are an expert insurance policy analyst. Analyze the policy documents and answer the customer's question accurately.
-
-        CUSTOMER QUESTION: {question}
-
-        EXTRACTED INTENT:
-        - Query Type: {intent.get('query_type', 'general')}
-        - Medical Procedure: {intent.get('medical_procedure', 'not specified')}
-        - Policy Aspect: {intent.get('policy_aspect', 'coverage')}
-
-        POLICY CONTEXT:
-        {context}
-
-        INSTRUCTIONS:
-        1. Answer based STRICTLY on the provided policy context
-        2. Be specific and cite exact policy terms when possible
-        3. If information is not in the context, state "not specified in provided policy documents"
-        4. Include relevant details like waiting periods, conditions, limits, or exclusions
-        5. Be clear and direct - this is for insurance claims processing
-
-        Provide a comprehensive but concise answer:
-        """
-        
-        try:
-            response = self.groq_client.chat.completions.create(
-                model="llama3-70b-8192",
-                messages=[{"role": "user", "content": insurance_prompt}],
-                temperature=0.2,
-                max_tokens=500
+                max_tokens=500,
+                stream=False
             )
             
             return response.choices[0].message.content.strip()
             
         except Exception as e:
-            print(f"⚠️ Answer generation failed: {e}")
-            return f"Unable to process the question '{question}' due to technical issues. Please try rephrasing or contact support."
+            logger.error(f"Answer generation failed: {e}")
+            return f"Unable to process the question due to technical issues: {str(e)}"
+
+class OptimizedQASystem:
+    """Main QA system orchestrating all components"""
     
-    def answer_question(self, question: str, vectorstore: Chroma) -> str:
-        """Process single question and return answer"""
-        
-        # Extract intent
-        intent = self.extract_query_intent(question)
-        
-        # Search for relevant context
-        try:
-            # Enhanced search query based on intent
-            search_query = question
-            if intent.get('medical_procedure') != 'not specified':
-                search_query += f" {intent['medical_procedure']}"
-            if intent.get('query_type') != 'general':
-                search_query += f" {intent['query_type']}"
-            
-            search_results = vectorstore.similarity_search(search_query, k=5)
-            
-            if not search_results:
-                return "No relevant information found in the policy documents for this question."
-            
-            # Combine context
-            context = "\n\n".join([doc.page_content for doc in search_results])
-            
-            # Generate answer
-            answer = self.generate_answer(question, context, intent)
-            
-            return answer
-            
-        except Exception as e:
-            print(f"❌ Error processing question: {e}")
-            return f"Error processing the question. Please try again or contact support."
+    def __init__(self):
+        self.doc_processor = OptimizedDocumentProcessor()
+        self.retriever = None
+        self.qa_generator = SmartQAGenerator(groq_client)
     
-    def process_queries(self, document_url: str, questions: List[str]) -> List[str]:
-        """Main processing pipeline"""
+    async def process_queries(self, document_url: str, questions: List[str]) -> List[str]:
+        """Main processing pipeline optimized for speed"""
         start_time = time.time()
         
-        # Process document
-        documents = self.doc_processor.process_document(document_url)
-        
-        # Create vector database
-        vectorstore = self.create_vectorstore(documents)
-        
-        # Process all questions
-        answers = []
-        for i, question in enumerate(questions, 1):
-            print(f"🤔 Processing question {i}/{len(questions)}: {question[:50]}...")
-            answer = self.answer_question(question, vectorstore)
-            answers.append(answer)
-        
-        total_time = time.time() - start_time
-        print(f"⚡ Processed {len(questions)} questions in {total_time:.2f} seconds")
-        
-        return answers
+        try:
+            # Process document
+            logger.info("Processing document...")
+            text = await self.doc_processor.process_document(document_url)
+            
+            # Build retrieval index
+            logger.info("Building retrieval index...")
+            self.retriever = UltraFastRetriever(embedding_model)
+            self.retriever.build_index(text)
+            
+            # Process all questions
+            answers = []
+            for i, question in enumerate(questions, 1):
+                logger.info(f"Processing question {i}/{len(questions)}")
+                
+                # Retrieve relevant chunks
+                relevant_chunks = self.retriever.hybrid_search(question, top_k=3)
+                
+                # Generate answer
+                answer = self.qa_generator.generate_answer(question, relevant_chunks)
+                answers.append(answer)
+            
+            total_time = time.time() - start_time
+            logger.info(f"Processed {len(questions)} questions in {total_time:.2f}s")
+            
+            return answers
+            
+        except Exception as e:
+            logger.error(f"Processing failed: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
-#FastAPI application
-
+# FastAPI application
 app = FastAPI(
-    title="HackRx 6.0 - Intelligent Document QA System",
-    description="AI-powered document processing and question answering for insurance domains",
-    version="1.0.0"
+    title="HackRx 6.0 - Optimized Document QA System",
+    description="Ultra-fast document processing and question answering",
+    version="2.0.0"
 )
 
 # CORS middleware
@@ -570,34 +573,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global QA system instance
+# Global QA system
 qa_system = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the QA system on startup"""
-    global qa_system
+    """Initialize models on startup"""
+    global qa_system, embedding_model, groq_client
+    
     try:
-        print("🚀 Starting HackRx 6.0 system...")
-        qa_system = HackRxIntelligentQA()
-        qa_system.initialize()
-        print("✅ HackRx 6.0 system ready!")
+        logger.info("Starting optimized HackRx system...")
+        
+        # Initialize embedding model
+        logger.info("Loading embedding model...")
+        embedding_model = SentenceTransformer('BAAI/bge-base-en-v1.5', device='cpu')
+        
+        # Initialize Groq client
+        logger.info("Initializing Groq client...")
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        
+        # Initialize QA system
+        qa_system = OptimizedQASystem()
+        
+        logger.info("✅ System ready!")
+        
     except Exception as e:
-        print(f"❌ Startup failed: {e}")
+        logger.error(f"Startup failed: {e}")
         raise
 
 @app.get("/")
 async def root():
-    """Health check endpoint"""
+    """System status"""
     return {
         "status": "online",
-        "system": "HackRx 6.0 - Intelligent Document QA",
-        "version": "1.0.0",
+        "system": "HackRx 6.0 - Optimized Document QA",
+        "version": "2.0.0",
+        "optimizations": [
+            "PyMuPDF for ultra-fast PDF processing",
+            "FAISS + BM25 hybrid search",
+            "BGE embeddings for accuracy",
+            "Groq for lightning-fast inference",
+            "Adaptive prompting system",
+            "Parallel processing pipeline"
+        ]
+    }
+
+@app.get("/health")
+async def health_check():
+    """Detailed health check"""
+    return {
+        "status": "healthy",
+        "timestamp": time.time(),
         "components": {
-            "doclayout_yolo": "✅ Loaded",
-            "free_embeddings": "✅ Loaded", 
-            "groq_llm": "✅ Connected",
-            "vectorstore": "✅ Ready"
+            "qa_system": "✅" if qa_system else "❌",
+            "embedding_model": "✅" if embedding_model else "❌",
+            "groq_client": "✅" if groq_client else "❌",
         }
     }
 
@@ -606,78 +636,38 @@ async def hackrx_run(
     request: QueryRequest,
     token: str = Depends(verify_token)
 ) -> QueryResponse:
-    """
-    Main HackRx endpoint for document processing and question answering
-    """
+    """Optimized HackRx endpoint"""
     try:
-        print(f"📥 Received HackRx request with {len(request.questions)} questions")
+        logger.info(f"Received request with {len(request.questions)} questions")
         
         if qa_system is None:
             raise HTTPException(status_code=500, detail="QA system not initialized")
         
         # Process queries
-        answers = qa_system.process_queries(request.documents, request.questions)
+        answers = await qa_system.process_queries(request.documents, request.questions)
         
-        print(f"✅ Successfully processed all questions")
-        
+        logger.info("Successfully processed all questions")
         return QueryResponse(answers=answers)
         
     except HTTPException:
         raise
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        logger.error(f"Unexpected error: {e}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@app.get("/health")
-async def health_check():
-    """Detailed health check"""
-    try:
-        health_status = {
-            "status": "healthy",
-            "timestamp": time.time(),
-            "components": {
-                "qa_system": "✅" if qa_system is not None else "❌",
-                "groq_client": "✅" if qa_system and qa_system.groq_client else "❌",
-                "doc_processor": "✅" if qa_system and qa_system.doc_processor else "❌",
-                "yolo_model": "✅" if qa_system and qa_system.doc_processor.model else "❌",
-                "embeddings": "✅" if qa_system and qa_system.doc_processor.embeddings else "❌"
-            }
-        }
-        
-        # Quick functionality test
-        if qa_system:
-            try:
-                test_response = qa_system.groq_client.chat.completions.create(
-                    model="llama3-8b-8192",
-                    messages=[{"role": "user", "content": "Health check"}],
-                    max_tokens=10
-                )
-                health_status["groq_test"] = "✅ Working"
-            except:
-                health_status["groq_test"] = "❌ Failed"
-        
-        return health_status
-        
-    except Exception as e:
-        return {"status": "unhealthy", "error": str(e)}
-
 if __name__ == "__main__":
-    print("🏆 HackRx 6.0 - Complete AI Insurance Document QA System")
-    print("=" * 70)
-    print("🎯 Features:")
-    print("   ✅ DocLayout-YOLO: Advanced document layout detection")
-    print("   ✅ Multi-format: PDF, DOCX, Email support")
-    print("   ✅ FREE Embeddings: HuggingFace all-MiniLM-L6-v2")
-    print("   ✅ Groq LLM: Lightning-fast intelligent responses")
-    print("   ✅ FastAPI: Production-ready REST API")
-    print("   ✅ HTTPS Ready: Secure deployment support")
-    print("=" * 70)
+    print("🚀 HackRx 6.0 - Ultra-Fast Optimized System")
+    print("=" * 50)
+    print("⚡ Optimizations:")
+    print("  • PyMuPDF: 10x faster PDF processing")
+    print("  • No OCR: Pure text extraction")
+    print("  • FAISS: Microsecond vector search")
+    print("  • BM25: Keyword matching")
+    print("  • BGE: Accurate embeddings")
+    print("  • Groq: Lightning inference")
+    print("  • Parallel processing")
+    print("=" * 50)
     
-    # Create necessary directories
-    os.makedirs(TEMP_DIR, exist_ok=True)
-    os.makedirs(CHROMA_DB_PATH, exist_ok=True)
-    
-    # Run the server
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
