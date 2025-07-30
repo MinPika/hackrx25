@@ -38,7 +38,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
 HACKRX_AUTH_TOKEN = "95f763f2e367cc7e5f72304cb9e9b84229f97f2a5b2b08f14b5034e8328596ec"
 
 # Global models - loaded once at startup
@@ -586,7 +586,8 @@ async def startup_event():
         
         # Initialize embedding model
         logger.info("Loading embedding model...")
-        embedding_model = SentenceTransformer('BAAI/bge-base-en-v1.5', device='cpu')
+        # Change line in startup function:
+        embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
         
         # Initialize Groq client
         logger.info("Initializing Groq client...")

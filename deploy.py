@@ -185,18 +185,18 @@ def create_render_files():
 
 def test_local_deployment():
     """Test the application locally"""
-    print("🧪 Testing local deployment...")
+    print("Testing local deployment...")
     
     try:
         # Install requirements
-        print("📦 Installing requirements...")
+        print("Installing requirements...")
         subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"], 
                       check=True, capture_output=True)
         
         print("✅ Requirements installed successfully")
         
         # Test import
-        print("🔍 Testing imports...")
+        print("Testing imports...")
         test_code = """
 import sys
 sys.path.append('.')
@@ -226,7 +226,7 @@ def create_deployment_guide():
     """Create deployment guide README"""
     guide_content = """# HackRx 6.0 Deployment Guide
 
-## 🚀 Quick Deployment Options
+## Quick Deployment Options
 
 ### 1. Railway (Recommended - Fastest)
 ```bash
@@ -271,7 +271,7 @@ docker build -t hackrx-6-qa .
 docker run -p 8000:8000 hackrx-6-qa
 ```
 
-## 🔧 Local Development
+## Local Development
 ```bash
 # Install dependencies
 pip install -r requirements.txt
@@ -283,13 +283,13 @@ sudo apt-get install tesseract-ocr poppler-utils
 python main.py
 ```
 
-## 📋 System Requirements
+## System Requirements
 - Python 3.9+
 - 2GB+ RAM (for AI models)
 - Tesseract OCR
 - Poppler utilities
 
-## 🧪 Testing Your Deployment
+## Testing Your Deployment
 ```bash
 # Test health endpoint
 curl https://your-app-url.com/health
@@ -304,36 +304,37 @@ curl -X POST https://your-app-url.com/hackrx/run \\
   }'
 ```
 
-## 🏆 HackRx Submission
+## HackRx Submission
 1. Deploy to any platform above
 2. Get your public HTTPS URL
 3. Submit webhook URL: `https://your-app.com/hackrx/run`
 4. Test with sample data
 
-## ⚡ Performance Tips
+## Performance Tips
 - Use Railway/Render for fastest cold starts
 - Heroku has 30s sleep time (might be slower)
 - Docker deployments are most reliable
 
-## 🔒 Security
+## Security
 - API keys are pre-configured
 - HTTPS is required for submission
 - Bearer token authentication enabled
 
-## 📊 Monitoring
+## Monitoring
 - Health check: `/health`
 - Root endpoint: `/` 
 - Detailed logs in application output
 """
     
-    with open("DEPLOYMENT.md", "w") as f:
+    # Fix for Windows encoding issue - use UTF-8 explicitly
+    with open("DEPLOYMENT.md", "w", encoding='utf-8') as f:
         f.write(guide_content)
     
     print("✅ Created deployment guide")
 
 def main():
     """Main deployment preparation function"""
-    print("🏆 HackRx 6.0 - Deployment Preparation")
+    print("HackRx 6.0 - Deployment Preparation")
     print("=" * 50)
     
     # Check requirements
@@ -341,7 +342,7 @@ def main():
         sys.exit(1)
     
     # Create all deployment files
-    print("\n📁 Creating deployment files...")
+    print("\nCreating deployment files...")
     create_env_file()
     create_dockerfile()
     create_heroku_files()
@@ -350,21 +351,21 @@ def main():
     create_deployment_guide()
     
     # Test local deployment
-    print("\n🧪 Testing local setup...")
+    print("\nTesting local setup...")
     if test_local_deployment():
         print("✅ Local setup successful")
     else:
         print("⚠️ Local test failed - check dependencies")
     
-    print("\n🎯 Next Steps:")
+    print("\nNext Steps:")
     print("1. Choose deployment platform (Railway recommended)")
     print("2. Push code to GitHub repository")
     print("3. Connect repository to deployment platform")
     print("4. Submit webhook URL to HackRx platform")
     print("5. Test with sample data")
     
-    print("\n📚 Read DEPLOYMENT.md for detailed instructions")
-    print("🏆 Good luck with HackRx 6.0!")
+    print("\nRead DEPLOYMENT.md for detailed instructions")
+    print("Good luck with HackRx 6.0!")
 
 if __name__ == "__main__":
     main()
